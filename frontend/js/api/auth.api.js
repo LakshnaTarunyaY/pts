@@ -1,18 +1,50 @@
-import { api } from './client.js';
+import { api, ApiError } from './client.js';
+
+function extractAuthError(err) {
+  const details = err?.details?.detail;
+  if (details && typeof details === 'object') {
+    return {
+      code: details.code || 'AUTH_ERROR',
+      message: details.message || err.message,
+    };
+  }
+  return {
+    code: 'AUTH_ERROR',
+    message: err?.message || 'Authentication failed',
+  };
+}
 
 export const authApi = {
-  // Check system health
   getHealth: () => api.get('/api/health'),
 
-  // Unified login for Patients & Doctors
-  login: (identifier, password, role = 'auto') => 
-    api.post('/api/auth/login', { identifier, password, role }),
+  /** ID-based login: patient → ABHA ID, doctor → Doctor ID */
+  login: async (identifier, role) => {
+    try {
+      return await api.post('/api/auth/login', { identifier, role });
+    } catch (err) {
+      const parsed = extractAuthError(err);
+      const error = new ApiError(err.status || 401, parsed.message, err.details);
+      error.code = parsed.code;
+      throw error;
+    }
+  },
 
-  // Register new patient profile
-  registerPatient: (patientData) => 
-    api.post('/api/auth/patient/register', patientData),
+  logout: () => api.post('/api/auth/logout', {}),
 
-  // Hospital directory (OPD doctors & room numbers)
-  getDirectory: () => 
-    api.get('/api/auth/directory'),
+  /** Multipart patient registration (structured profile + optional documents) */
+  registerPatient: (formData) => api.upload('/api/auth/patient/register', formData),
+
+  /** Doctor registration — returns generated Doctor ID */
+  registerDoctor: async (doctorData) => {
+    try {
+      return await api.post('/api/auth/doctor/register', doctorData);
+    } catch (err) {
+      const parsed = extractAuthError(err);
+      const error = new ApiError(err.status || 400, parsed.message, err.details);
+      error.code = parsed.code;
+      throw error;
+    }
+  },
+
+  getDirectory: () => api.get('/api/auth/directory'),
 };

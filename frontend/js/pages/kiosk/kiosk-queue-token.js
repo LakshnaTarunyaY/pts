@@ -12,7 +12,8 @@ let countdownInterval = null;
 export function renderKioskQueueToken() {
   const kioskState = store.getState().kiosk;
   const lang = kioskState.language || 'hi';
-  const token = kioskState.tokenNumber || 'A-261';
+  const token = kioskState.tokenNumber || '—';
+  const queueStatus = kioskState.queueStatus || {};
 
   return `
     <div class="kiosk-shell">
@@ -48,26 +49,26 @@ export function renderKioskQueueToken() {
           <div class="kiosk-task-canvas" style="align-items:center; justify-content:center;">
             <div class="queue-ticket">
               <div class="queue-ticket__header">All India Institute of Ayurveda · OPD Ticket</div>
-              <div style="font-size:14px; color:var(--text-muted);">${i18n.t('dept_general', lang)}</div>
+              <div style="font-size:14px; color:var(--text-muted);" id="ticketDepartment">${queueStatus.department || i18n.t('dept_general', lang)}</div>
               
               <div class="queue-ticket__token" id="ticketTokenDisplay">${token}</div>
               
               <div class="queue-ticket__meta-grid">
                 <div>
                   <span style="font-size:11px; color:var(--text-muted); text-transform:uppercase; display:block;">${i18n.t('consulting_doctor', lang)}</span>
-                  <strong style="font-size:15px; color:var(--text-primary);">Dr. S. Verma</strong>
+                  <strong style="font-size:15px; color:var(--text-primary);" id="ticketDoctorName">${queueStatus.doctor_name || '—'}</strong>
                 </div>
                 <div>
                   <span style="font-size:11px; color:var(--text-muted); text-transform:uppercase; display:block;">${i18n.t('chamber_room', lang)}</span>
-                  <strong style="font-size:15px; color:var(--brand-primary);">Cabin 102 (1st Floor)</strong>
+                  <strong style="font-size:15px; color:var(--brand-primary);" id="ticketDoctorRoom">${queueStatus.doctor_room || '—'}</strong>
                 </div>
                 <div style="margin-top:8px;">
                   <span style="font-size:11px; color:var(--text-muted); text-transform:uppercase; display:block;">${i18n.t('est_wait', lang)}</span>
-                  <strong style="font-size:15px; color:var(--status-success);">~12 Minutes</strong>
+                  <strong style="font-size:15px; color:var(--status-success);" id="ticketEstWait">${queueStatus.estimated_wait_minutes != null ? `~${queueStatus.estimated_wait_minutes} min` : '—'}</strong>
                 </div>
                 <div style="margin-top:8px;">
                   <span style="font-size:11px; color:var(--text-muted); text-transform:uppercase; display:block;">${i18n.t('patients_ahead', lang)}</span>
-                  <strong style="font-size:15px; color:var(--status-warning);">2 Patients</strong>
+                  <strong style="font-size:15px; color:var(--status-warning);" id="ticketPatientsAhead">${queueStatus.patients_ahead != null ? queueStatus.patients_ahead : '—'}</strong>
                 </div>
               </div>
 
@@ -87,7 +88,7 @@ export function renderKioskQueueToken() {
               ${i18n.t('proceed_waiting', lang)}
             </span>
             <a href="#/doctor/queue" class="btn btn-ghost btn-sm" style="color:var(--brand-primary); font-weight:700;">
-              Open Dr. Verma's Desk (Window 2) →
+              Open Doctor Station (Window 2) →
             </a>
           </div>
         </div>
@@ -97,16 +98,26 @@ export function renderKioskQueueToken() {
 }
 
 export function initKioskQueueToken() {
-  const token = store.getState().kiosk.tokenNumber || 'A-261';
+  const token = store.getState().kiosk.tokenNumber;
 
-  // Fetch live queue status if server is active
-  queueApi.getStatus(token)
-    .then(status => {
-      console.log('Live Queue Status from server:', status);
-    })
-    .catch(err => {
-      console.warn('Queue status API fallback:', err);
-    });
+  if (token) {
+    queueApi.getStatus(token)
+      .then(status => {
+        store.updateKioskIntake({ queueStatus: status });
+        const set = (id, value) => {
+          const el = document.getElementById(id);
+          if (el && value != null && value !== '') el.textContent = value;
+        };
+        set('ticketDepartment', status.department);
+        set('ticketDoctorName', status.doctor_name || 'To be assigned');
+        set('ticketDoctorRoom', status.doctor_room || 'To be assigned');
+        set('ticketEstWait', `~${status.estimated_wait_minutes} min`);
+        set('ticketPatientsAhead', String(status.patients_ahead));
+      })
+      .catch(err => {
+        console.warn('Queue status unavailable:', err);
+      });
+  }
 
   // Automated 10-Second Privacy Countdown
   let secondsRemaining = 10;

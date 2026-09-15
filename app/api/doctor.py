@@ -5,7 +5,8 @@ Doctor authentication, queue intelligence, patient detail view, and evidence dri
 
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.database import get_db
 from app.config import settings
 from app.schemas.doctor import (
@@ -21,23 +22,142 @@ from app.schemas.clinical_fact import (
 from app.core.clinical.drug_safety import DrugInteractionEngine
 from app.core.clinical.lab_checker import LabRangeChecker
 from app.core.clinical.gap_detector import ClinicalGapDetector
+from app.core.security.session import (
+    create_session,
+    require_doctor_session,
+    doctor_can_access_abha,
+    grant_doctor_abha_access,
+    resolve_abha_for_encounter,
+)
 
 logger = logging.getLogger("medikiosk.api.doctor")
 router = APIRouter(prefix="/api/doctor", tags=["Doctor Dashboard"])
 
 
 @router.post("/auth", response_model=DoctorAuthResponse)
-async def authenticate_doctor(request: DoctorAuthRequest):
+async def authenticate_doctor(request: DoctorAuthRequest, db=Depends(get_db)):
     """
-    Authenticate doctor with 4-digit PIN.
-    Simple gate for hackathon demo — production would use hospital SSO.
+    Authenticate doctor by Doctor ID (preferred).
+    Legacy PIN gate retained so existing clinical tooling keeps working —
+    it issues a real server session for doc-verma (no unrestricted access).
     """
-    if request.pin == settings.DOCTOR_PIN:
-        logger.info("Doctor authenticated successfully")
-        return DoctorAuthResponse(authenticated=True, message="Authentication successful")
-    else:
-        logger.warning(f"Doctor authentication failed (attempted PIN: {request.pin[:2]}**)")
-        raise HTTPException(status_code=401, detail="Invalid PIN")
+    if request.doctor_id:
+        cursor = await db.execute(
+            "SELECT id, role, full_name, email, mobile, department, specialization, room_number, qualification, registration_number, city FROM users WHERE role = 'doctor' AND id = ?",
+            (request.doctor_id.strip(),),
+        )
+        user = await cursor.fetchone()
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "DOCTOR_NOT_REGISTERED", "message": "Doctor ID Not Registered"},
+            )
+        doctor = dict(user)
+        token = await create_session(db, user_id=doctor["id"], role="doctor")
+        logger.info(f"Doctor authenticated by ID: {request.doctor_id}")
+        return DoctorAuthResponse(
+            authenticated=True,
+            message="Authentication successful",
+            doctor=doctor,
+            session_token=token,
+        )
+
+    if request.pin and request.pin == settings.DOCTOR_PIN:
+        cursor = await db.execute(
+            """
+            SELECT id, role, full_name, email, mobile, department, specialization, room_number, qualification
+            FROM users WHERE role = 'doctor' ORDER BY room_number ASC LIMIT 1
+            """
+        )
+        user = await cursor.fetchone()
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "DOCTOR_NOT_REGISTERED", "message": "No registered doctor account available"},
+            )
+        doctor = dict(user)
+        token = await create_session(db, user_id=doctor["id"], role="doctor")
+        logger.info(f"Doctor authenticated via legacy PIN → session issued for {doctor['id']}")
+        return DoctorAuthResponse(
+            authenticated=True,
+            message="Authentication successful",
+            doctor=doctor,
+            session_token=token,
+        )
+
+    raise HTTPException(
+        status_code=401,
+        detail={"code": "INVALID_DOCTOR_ID", "message": "Invalid Doctor ID"},
+    )
+
+
+@router.get("/me")
+async def get_authenticated_doctor(session=Depends(require_doctor_session), db=Depends(get_db)):
+    """
+    Return the logged-in doctor's own profile plus live workstation stats.
+    Replaces hardcoded 'Dr. S. Verma / Room 102 / 5.2m' UI values.
+    """
+    cursor = await db.execute(
+        """
+        SELECT id, role, full_name, email, mobile, city, department, specialization,
+               room_number, qualification, registration_number, hospital_name, hospital_phone
+        FROM users WHERE role = 'doctor' AND id = ?
+        """,
+        (session["user_id"],),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DOCTOR_NOT_REGISTERED", "message": "Doctor ID Not Registered"},
+        )
+    doctor = dict(row)
+    if doctor.get("room_number") == "Pending Assignment":
+        doctor["room_number"] = None
+
+    cursor = await db.execute(
+        """
+        SELECT COUNT(*) AS waiting,
+               SUM(CASE WHEN e.severity_badge = 'RED' THEN 1 ELSE 0 END) AS critical
+        FROM queue_tokens qt
+        JOIN encounters e ON e.id = qt.encounter_id
+        WHERE qt.status = 'WAITING' AND e.status IN ('COMPLETED', 'IN_PROGRESS')
+        """
+    )
+    counts = await cursor.fetchone()
+
+    # Average consultation time = called_at → doctor_reviewed_at for this doctor
+    cursor = await db.execute(
+        """
+        SELECT AVG((julianday(e.doctor_reviewed_at) - julianday(qt.called_at)) * 24 * 60) AS avg_minutes,
+               COUNT(*) AS sample_size
+        FROM encounters e
+        JOIN queue_tokens qt ON qt.encounter_id = e.id
+        WHERE e.verified_by_doctor_id = ?
+          AND e.doctor_reviewed_at IS NOT NULL
+          AND qt.called_at IS NOT NULL
+        """,
+        (doctor["id"],),
+    )
+    timing = await cursor.fetchone()
+    avg_minutes = timing["avg_minutes"] if timing and timing["avg_minutes"] is not None else None
+
+    cursor = await db.execute(
+        "SELECT COUNT(*) AS reviewed FROM encounters WHERE verified_by_doctor_id = ?",
+        (doctor["id"],),
+    )
+    reviewed = (await cursor.fetchone())["reviewed"]
+
+    return {
+        "doctor": doctor,
+        "stats": {
+            "waiting_patients": counts["waiting"] or 0,
+            "critical_patients": counts["critical"] or 0,
+            "reviewed_total": reviewed or 0,
+            "average_consult_minutes": round(avg_minutes, 1) if avg_minutes is not None else None,
+            "average_consult_sample": timing["sample_size"] if timing else 0,
+        },
+    }
 
 
 @router.get("/queue", response_model=DoctorQueueResponse)
@@ -53,8 +173,8 @@ async def get_doctor_queue(db=Depends(get_db)):
         """
         SELECT e.*, qt.token as queue_token, qt.position,
                COALESCE(p.name, u.full_name, 'Patient ' || qt.token) as patient_name,
-               COALESCE(p.age, 50) as patient_age,
-               COALESCE(p.gender, 'unspecified') as patient_gender,
+               COALESCE(p.age, u.age) as patient_age,
+               COALESCE(p.gender, u.gender) as patient_gender,
                COALESCE(e.department, 'General Medicine') as resolved_department
         FROM encounters e
         JOIN queue_tokens qt ON e.id = qt.encounter_id
@@ -431,34 +551,92 @@ async def get_patient_detail(encounter_id: str, db=Depends(get_db)):
 
 
 @router.post("/patient/{encounter_id}/call-next")
-async def call_next_patient(encounter_id: str, db=Depends(get_db)):
-    """Doctor calls the next patient from the queue."""
+async def call_next_patient(
+    encounter_id: str,
+    doctor_id: Optional[str] = Query(None),
+    session=Depends(require_doctor_session),
+    db=Depends(get_db),
+):
+    """Doctor calls the next patient from the queue — grants ABHA access for continuity."""
+    resolved_doctor = session["user_id"]
+    cursor = await db.execute(
+        "SELECT room_number, department, full_name FROM users WHERE id = ?", (resolved_doctor,)
+    )
+    doc = await cursor.fetchone()
+
     await db.execute(
-        "UPDATE queue_tokens SET status = 'CALLED', called_at = datetime('now') WHERE encounter_id = ?",
-        (encounter_id,)
+        """
+        UPDATE queue_tokens
+        SET status = 'CALLED', called_at = datetime('now'),
+            doctor_room = COALESCE(NULLIF(?, 'Pending Assignment'), doctor_room)
+        WHERE encounter_id = ?
+        """,
+        (doc["room_number"] if doc else None, encounter_id)
     )
     await db.execute(
         "INSERT INTO audit_log (encounter_id, actor, action) VALUES (?, ?, 'patient_called')",
-        (encounter_id, f"doctor:{settings.DOCTOR_PIN}")
+        (encounter_id, f"doctor:{resolved_doctor}")
     )
+    abha = await resolve_abha_for_encounter(db, encounter_id)
+    if abha:
+        await grant_doctor_abha_access(
+            db,
+            doctor_id=resolved_doctor,
+            abha_id=abha,
+            reason="call_next",
+            granted_by=resolved_doctor,
+        )
     await db.commit()
 
+    cursor = await db.execute(
+        "SELECT token, doctor_room FROM queue_tokens WHERE encounter_id = ?", (encounter_id,)
+    )
+    token_row = await cursor.fetchone()
+
     logger.info(f"Patient called: encounter {encounter_id}")
-    return {"encounter_id": encounter_id, "status": "CALLED"}
+    return {
+        "encounter_id": encounter_id,
+        "status": "CALLED",
+        "token_number": token_row["token"] if token_row else None,
+        "room_number": (token_row["doctor_room"] if token_row else None)
+        or (doc["room_number"] if doc and doc["room_number"] != "Pending Assignment" else None),
+        "called_by": doc["full_name"] if doc else None,
+    }
 
 
 @router.get("/patient/by-abha/{abha_id}")
-async def get_patient_by_abha(abha_id: str, db=Depends(get_db)):
+async def get_patient_by_abha(
+    abha_id: str,
+    session=Depends(require_doctor_session),
+    db=Depends(get_db),
+):
     """
     Longitudinal ABHA Record Lookup for Physicians.
-    Retrieves all past encounters, digitized prescriptions, and clinical history for this ABHA ID.
+    Requires doctor session + authorization (grant / active OPD / prior care).
     """
+    doctor_id = session["user_id"]
     clean_abha = abha_id.strip()
+
+    allowed, reason = await doctor_can_access_abha(db, doctor_id, clean_abha)
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "ABHA_ACCESS_DENIED",
+                "message": "Not authorized to view this patient's records. Call the patient from queue or obtain care-team access.",
+            },
+        )
 
     # 1. Fetch patient user profile if exists
     cursor = await db.execute(
-        "SELECT id, full_name, mobile, abha_id, email FROM users WHERE abha_id = ? OR mobile = ? OR id = ?",
-        (clean_abha, clean_abha, clean_abha)
+        """
+        SELECT id, full_name, mobile, abha_id, email, date_of_birth, age, gender, city,
+               blood_group, allergy_food, allergy_drug, allergy_environmental,
+               current_medications, pre_existing_conditions, chronic_diseases,
+               surgical_history, medical_history, emergency_contact
+        FROM users WHERE role = 'patient' AND (abha_id = ? OR id = ?)
+        """,
+        (clean_abha, clean_abha)
     )
     user = await cursor.fetchone()
     patient_id = user["id"] if user else None
@@ -474,18 +652,19 @@ async def get_patient_by_abha(abha_id: str, db=Depends(get_db)):
     encounters = [dict(row) for row in await cursor.fetchall()]
 
     if not encounters and not user:
-        raise HTTPException(status_code=404, detail=f"No patient records found for ABHA ID: {clean_abha}")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ABHA_NOT_REGISTERED", "message": f"No patient records found for ABHA ID: {clean_abha}"},
+        )
 
     # 3. Pull clinical facts and documents across all visits
     timeline = []
     for enc in encounters:
         enc_id = enc["id"]
-        # Facts
         f_cursor = await db.execute("SELECT * FROM clinical_facts WHERE encounter_id = ?", (enc_id,))
         facts = [dict(f) for f in await f_cursor.fetchall()]
 
-        # Documents
-        d_cursor = await db.execute("SELECT * FROM documents WHERE encounter_id = ?", (enc_id,))
+        d_cursor = await db.execute("SELECT * FROM documents WHERE encounter_id = ? OR (patient_id = ? AND encounter_id = ?)", (enc_id, patient_id, enc_id))
         docs = [dict(d) for d in await d_cursor.fetchall()]
 
         timeline.append({
@@ -506,30 +685,43 @@ async def get_patient_by_abha(abha_id: str, db=Depends(get_db)):
             "documents": docs
         })
 
+    await db.execute(
+        "INSERT INTO audit_log (encounter_id, actor, action, details) VALUES (NULL, ?, ?, ?)",
+        (
+            f"doctor:{doctor_id}",
+            "abha_lookup",
+            json.dumps({"abha_id": clean_abha, "visits": len(timeline), "access_reason": reason}),
+        ),
+    )
+    await db.commit()
+
     return {
         "abha_id": clean_abha,
-        "patient": dict(user) if user else {
-            "full_name": "Ramesh Kumar",
-            "abha_id": clean_abha,
-            "mobile": "9876543210"
-        },
+        "patient": dict(user) if user else None,
         "total_visits": len(timeline),
-        "timeline": timeline
+        "timeline": timeline,
+        "access_reason": reason,
     }
 
 
 @router.post("/encounter/{encounter_id}/verify")
 async def verify_encounter(
     encounter_id: str,
-    doctor_id: str = "doc-verma",
-    notes: str = "Clinical history verified. Prescriptions aligned with AYUSH guidelines.",
+    doctor_id: Optional[str] = Query(None, description="Ignored — session doctor is authoritative"),
+    notes: str = "Clinical history verified.",
+    session=Depends(require_doctor_session),
     db=Depends(get_db)
 ):
     """Physician signs off, accepts diagnosis, and annotates the clinical case."""
-    # Check doctor name
-    cursor = await db.execute("SELECT full_name, department FROM users WHERE id = ?", (doctor_id,))
+    resolved_doctor = session["user_id"]
+    cursor = await db.execute("SELECT full_name, department FROM users WHERE id = ?", (resolved_doctor,))
     doc = await cursor.fetchone()
-    doc_name = doc["full_name"] if doc else "Dr. S. Verma"
+    if not doc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "INVALID_DOCTOR_ID", "message": "Invalid Doctor ID"},
+        )
+    doc_name = doc["full_name"]
 
     await db.execute("""
         UPDATE encounters
@@ -538,12 +730,22 @@ async def verify_encounter(
             doctor_reviewed_at = datetime('now'),
             status = 'DOCTOR_REVIEWED'
         WHERE id = ?
-    """, (doctor_id, notes, encounter_id))
+    """, (resolved_doctor, notes, encounter_id))
+
+    abha = await resolve_abha_for_encounter(db, encounter_id)
+    if abha:
+        await grant_doctor_abha_access(
+            db,
+            doctor_id=resolved_doctor,
+            abha_id=abha,
+            reason="encounter_verified",
+            granted_by=resolved_doctor,
+        )
 
     await db.execute("""
         INSERT INTO audit_log (encounter_id, actor, action, details)
         VALUES (?, ?, 'doctor_verified', ?)
-    """, (encounter_id, f"doctor:{doctor_id}", f"Verified by {doc_name}: {notes}"))
+    """, (encounter_id, f"doctor:{resolved_doctor}", f"Verified by {doc_name}: {notes}"))
 
     await db.commit()
     logger.info(f"Encounter {encounter_id} verified by {doc_name}")

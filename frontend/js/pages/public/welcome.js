@@ -2,6 +2,8 @@
  * MediKiosk Web — Page 01: Welcome Landing Screen
  */
 
+import { authApi } from '../../api/auth.api.js';
+
 export function renderWelcomePage() {
   return `
     <div class="welcome-landing" style="max-width:1200px; margin:0 auto; padding:var(--space-10) var(--space-6); display:grid; grid-template-columns:1.2fr 1fr; gap:var(--space-10); align-items:center; min-height:calc(100vh - var(--header-height) - 80px);">
@@ -46,12 +48,13 @@ export function renderWelcomePage() {
 
           <div style="background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-lg); padding:var(--space-4); text-align:left; display:flex; flex-direction:column; gap:8px;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-size:12px; font-weight:700; color:var(--brand-dark);">QUICK ACCESS CREDENTIALS</span>
-              <span class="badge badge-green">Ready</span>
+              <span style="font-size:12px; font-weight:700; color:var(--brand-dark);">HOW TO SIGN IN</span>
+              <span class="badge badge-green" id="welcomeHubStatus">Ready</span>
             </div>
-            <div style="font-size:13px;">🩺 <strong>Doctor Station:</strong> PIN <code>1234</code></div>
-            <div style="font-size:13px;">👤 <strong>Patient Portal:</strong> Mobile <code>9876543210</code> / <code>patient123</code></div>
+            <div style="font-size:13px;">🩺 <strong>Doctor Station:</strong> your Doctor ID <span id="welcomeDoctorHint" style="color:var(--text-muted);"></span></div>
+            <div style="font-size:13px;">👤 <strong>Patient Portal:</strong> your 14-digit ABHA ID</div>
             <div style="font-size:13px;">🏥 <strong>Kiosk Mode:</strong> 1-Tap Walk-In (No login required)</div>
+            <div style="font-size:13px;">✍️ <strong>New users:</strong> <a href="#/register">Register / Sign Up</a></div>
           </div>
         </div>
 
@@ -70,4 +73,24 @@ export function renderWelcomePage() {
       </div>
     </div>
   `;
+}
+
+export async function initWelcomePage() {
+  const statusEl = document.getElementById('welcomeHubStatus');
+  const hintEl = document.getElementById('welcomeDoctorHint');
+  try {
+    const dir = await authApi.getDirectory();
+    const count = (dir.doctors || []).length;
+    if (hintEl) {
+      hintEl.textContent = count
+        ? `· ${count} physician(s) registered`
+        : '· no physicians registered yet';
+    }
+    if (statusEl) statusEl.textContent = 'Edge Hub Ready';
+  } catch {
+    if (statusEl) {
+      statusEl.textContent = 'Edge Hub Offline';
+      statusEl.className = 'badge badge-amber';
+    }
+  }
 }

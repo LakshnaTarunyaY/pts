@@ -205,7 +205,7 @@ export function initIvrSimulator() {
 
       const summaryEl = document.getElementById('waterfallResultSummary');
       if (summaryEl) {
-        summaryEl.textContent = `Assigned Clinic: ${clinic.name || 'AIIA'} (${clinic.room_number || 'Room 102'}) · ${data.resolution_type} · ${data.rationale}`;
+        summaryEl.textContent = `Assigned Clinic: ${clinic.name || 'Unresolved'} (${clinic.room_number || 'room pending'}) · ${data.resolution_type} · ${data.rationale}`;
       }
     } catch (err) {
       console.warn('Waterfall test error:', err);

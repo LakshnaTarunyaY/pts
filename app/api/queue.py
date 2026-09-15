@@ -27,12 +27,16 @@ async def get_queue_status(token: str, db=Depends(get_db)):
     if not queue_entry:
         raise HTTPException(status_code=404, detail=f"Token {token} not found in queue")
 
-    # Count patients ahead in the same department
+    # Count patients ahead in the same department. Only encounters that actually reached
+    # the physician's queue count — abandoned intakes must not inflate the wait estimate.
     ahead_row = await db.execute(
         """
-        SELECT COUNT(*) as cnt FROM queue_tokens
-        WHERE department = ? AND status = 'WAITING'
-        AND position < ? AND token != ?
+        SELECT COUNT(*) as cnt
+        FROM queue_tokens qt
+        JOIN encounters e ON e.id = qt.encounter_id
+        WHERE qt.department = ? AND qt.status = 'WAITING'
+          AND e.status IN ('COMPLETED', 'IN_PROGRESS')
+          AND qt.position < ? AND qt.token != ?
         """,
         (queue_entry["department"], queue_entry["position"], token)
     )
@@ -41,13 +45,33 @@ async def get_queue_status(token: str, db=Depends(get_db)):
     # Estimate wait (rough: ~3 minutes per patient in typical Indian OPD)
     estimated_wait = patients_ahead * 3
 
+    # Resolve the consulting physician from the assigned room, else the department roster
+    doc_row = await db.execute(
+        """
+        SELECT full_name, room_number FROM users
+        WHERE role = 'doctor' AND (
+            (? IS NOT NULL AND room_number = ?) OR department = ?
+        )
+        ORDER BY CASE WHEN room_number = ? THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (
+            queue_entry["doctor_room"],
+            queue_entry["doctor_room"],
+            queue_entry["department"],
+            queue_entry["doctor_room"],
+        ),
+    )
+    doctor = await doc_row.fetchone()
+
     return QueueStatusResponse(
         token=token,
         department=queue_entry["department"],
         status=queue_entry["status"],
         patients_ahead=patients_ahead,
         estimated_wait_minutes=estimated_wait,
-        doctor_room=queue_entry["doctor_room"]
+        doctor_room=queue_entry["doctor_room"] or (doctor["room_number"] if doctor else None),
+        doctor_name=doctor["full_name"] if doctor else None
     )
 
 

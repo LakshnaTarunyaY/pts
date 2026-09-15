@@ -5,6 +5,7 @@
  */
 
 import { renderEvidenceViewer } from './evidence-viewer.js';
+import { store } from '../store.js';
 
 function formatAyushSummary(ayush = {}) {
   const parts = [];
@@ -16,7 +17,7 @@ function formatAyushSummary(ayush = {}) {
   if (agni) parts.push(`${String(agni)} Agni`);
   if (koshtha) parts.push(`${String(koshtha)} Koshtha`);
 
-  return parts.length > 0 ? parts.join(' · ') : 'Sama Agni (Balanced digestion)';
+  return parts.length > 0 ? parts.join(' · ') : 'Not assessed';
 }
 
 export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
@@ -28,6 +29,8 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
   const ayush = encounterDetail.ayush_intake || {};
   const channel = enc.channel || 'kiosk';
   const isIvr = channel === 'ivr_phone';
+  const signingDoctor = store.getState().doctor.profile || {};
+  const signingDoctorName = signingDoctor.full_name || 'Signing physician';
 
   // Extract Chief Complaint & Symptoms
   const ccFact = facts.find(f => f.category === 'chief_complaint');
@@ -43,7 +46,10 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
 
   // Dynamic Patient Name & Demographics
   const displayName = pat.name || enc.patient_name || (isIvr ? `Citizen Caller (${enc.caller_phone || 'Telephony'})` : `Patient ${enc.token_number || ''}`);
-  const displayAge = pat.age ? `${pat.age} Y / ${pat.gender === 'F' ? 'Female' : 'Male'}` : (isIvr ? 'Telephony Citizen (Age pending)' : 'Age unrecorded');
+  const genderMap = { F: 'Female', M: 'Male', O: 'Other' };
+  const displayGender = genderMap[pat.gender] || pat.gender || null;
+  const displayAge = [pat.age ? `${pat.age} Y` : null, displayGender].filter(Boolean).join(' / ')
+    || (isIvr ? 'Telephony citizen (demographics pending)' : 'Demographics unrecorded');
   const displayAbha = pat.abha_id || enc.abha_id || (isIvr ? 'Unlinked (Direct Phone Call)' : 'Not linked');
 
   // Extract Vitals
@@ -52,11 +58,16 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
   const vitalSpo2Fact = facts.find(f => f.category === 'vital' && (f.field === 'spo2' || f.field === 'oxygen'));
   const vitalTempFact = facts.find(f => f.category === 'vital' && (f.field === 'temp' || f.field === 'temperature'));
 
-  const bpVal = vitalBpFact ? vitalBpFact.value : '120/80 mmHg';
-  const hrVal = vitalHrFact ? (vitalHrFact.value.includes('bpm') ? vitalHrFact.value : `${vitalHrFact.value} bpm`) : '72 bpm';
-  const spo2Val = vitalSpo2Fact ? (vitalSpo2Fact.value.includes('%') ? vitalSpo2Fact.value : `${vitalSpo2Fact.value}%`) : '98%';
-  const tempVal = vitalTempFact ? (vitalTempFact.value.includes('°') ? vitalTempFact.value : `${vitalTempFact.value}°F`) : '98.6°F';
+  // Never substitute normative values for unmeasured vitals — clinicians must see the gap
+  const NOT_RECORDED = 'Not recorded';
+  const bpVal = vitalBpFact ? vitalBpFact.value : NOT_RECORDED;
+  const hrVal = vitalHrFact ? (vitalHrFact.value.includes('bpm') ? vitalHrFact.value : `${vitalHrFact.value} bpm`) : NOT_RECORDED;
+  const spo2Val = vitalSpo2Fact ? (vitalSpo2Fact.value.includes('%') ? vitalSpo2Fact.value : `${vitalSpo2Fact.value}%`) : NOT_RECORDED;
+  const tempVal = vitalTempFact ? (vitalTempFact.value.includes('°') ? vitalTempFact.value : `${vitalTempFact.value}°F`) : NOT_RECORDED;
   const hasRecordedVitals = Boolean(vitalBpFact || vitalHrFact || vitalSpo2Fact || vitalTempFact);
+  const vitalStyle = (recorded) => recorded
+    ? 'font-size:14px; font-weight:700;'
+    : 'font-size:13px; font-weight:600; color:var(--text-muted);';
 
   return `
     <div class="doctor-3col-workspace">
@@ -66,7 +77,7 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
       <div class="doctor-col">
         <div class="doctor-col__header">
           <span>👤 Patient Snapshot</span>
-          <span class="badge badge-teal">${enc.department || 'AYUSH OPD'}</span>
+          <span class="badge badge-teal">${enc.department || 'Department pending'}</span>
         </div>
         <div class="doctor-col__body">
           <div style="background:var(--bg-surface-soft); padding:var(--space-4); border-radius:var(--radius-lg); border:1px solid var(--border-default);">
@@ -79,8 +90,8 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
           <!-- Vitals Strip -->
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <div style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--text-muted);">Physiological Vitals</div>
-            <span class="badge ${hasRecordedVitals ? 'badge-teal' : 'badge-blue'}" style="font-size:10px;">
-              ${hasRecordedVitals ? 'Live Measured' : 'Normative Baseline'}
+            <span class="badge ${hasRecordedVitals ? 'badge-teal' : 'badge-amber'}" style="font-size:10px;">
+              ${hasRecordedVitals ? 'Live Measured' : 'Awaiting measurement'}
             </span>
           </div>
           ${isIvr && facts.length === 0 ? `
@@ -91,19 +102,19 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-2);">
               <div style="padding:8px 10px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px solid var(--border-subtle);">
                 <div style="font-size:10px; color:var(--text-muted);">Blood Pressure</div>
-                <div style="font-size:14px; font-weight:700;">${bpVal}</div>
+                <div style="${vitalStyle(vitalBpFact)}">${bpVal}</div>
               </div>
               <div style="padding:8px 10px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px solid var(--border-subtle);">
                 <div style="font-size:10px; color:var(--text-muted);">Heart Rate</div>
-                <div style="font-size:14px; font-weight:700;">${hrVal}</div>
+                <div style="${vitalStyle(vitalHrFact)}">${hrVal}</div>
               </div>
               <div style="padding:8px 10px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px solid var(--border-subtle);">
                 <div style="font-size:10px; color:var(--text-muted);">SpO2 Saturation</div>
-                <div style="font-size:14px; font-weight:700; color:var(--status-success);">${spo2Val}</div>
+                <div style="${vitalStyle(vitalSpo2Fact)} ${vitalSpo2Fact ? 'color:var(--status-success);' : ''}">${spo2Val}</div>
               </div>
               <div style="padding:8px 10px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px solid var(--border-subtle);">
                 <div style="font-size:10px; color:var(--text-muted);">Temperature</div>
-                <div style="font-size:14px; font-weight:700;">${tempVal}</div>
+                <div style="${vitalStyle(vitalTempFact)}">${tempVal}</div>
               </div>
             </div>
           `}
@@ -142,7 +153,7 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
           <div style="background:var(--brand-tint); border-left:4px solid var(--brand-primary); padding:var(--space-4); border-radius:var(--radius-lg); border:1px solid var(--border-brand);">
             <div style="font-size:11px; font-weight:700; color:var(--brand-primary); text-transform:uppercase; margin-bottom:2px;">30-Second Clinical Triage Synthesis</div>
             <div style="font-size:14px; font-weight:600; color:var(--text-primary); line-height:1.4;">
-              ${enc.summary_text || `"${chiefComplaint}" · Duration: ${facts.find(f => f.category === 'symptom' && f.field === 'duration')?.value || 'Recent onset'} · Channel: ${isIvr ? 'Direct Inbound Telephony (ExoPhone 040-4189-7954)' : 'In-Clinic Kiosk'}.`}
+              ${enc.summary_text || `"${chiefComplaint}" · Duration: ${facts.find(f => f.category === 'symptom' && f.field === 'duration')?.value || 'Not stated'} · Channel: ${isIvr ? `Direct Inbound Telephony${enc.caller_phone ? ` (${enc.caller_phone})` : ''}` : 'In-Clinic Kiosk'}.`}
             </div>
           </div>
 
@@ -151,9 +162,9 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
             <div style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--text-muted);">Extracted Clinical Facts (${facts.length})</div>
             <div style="background:var(--bg-surface-soft); padding:var(--space-4); border-radius:var(--radius-lg); border:1px solid var(--border-default); display:flex; flex-direction:column; gap:8px;">
               <div><strong>Chief Complaint:</strong> ${chiefComplaint}</div>
-              <div><strong>Recorded Medications:</strong> ${medications.length > 0 ? medications.map(m => m.value).join(', ') : (isIvr ? 'None reported yet' : 'None reported / reconciled')}</div>
+              <div><strong>Recorded Medications:</strong> ${medications.length > 0 ? medications.map(m => m.value).join(', ') : 'None reported'}</div>
               <div><strong>AYUSH Profile:</strong> ${formatAyushSummary(ayush)}</div>
-              <div><strong>Department:</strong> ${enc.department || 'All India Institute of Ayurveda (AIIA)'}</div>
+              <div><strong>Department:</strong> ${enc.department || 'Not assigned'}</div>
             </div>
           </div>
 
@@ -171,19 +182,19 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
       <div class="doctor-col">
         <div class="doctor-col__header">
           <span>🩺 Doctor Prescription & Sign-Off</span>
-          <span class="badge badge-blue">Dr. S. Verma</span>
+          <span class="badge badge-blue">${signingDoctorName}</span>
         </div>
         <div class="doctor-col__body">
           <div>
             <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; color:var(--text-secondary);">Clinical Assessment & Notes</label>
-            <textarea id="doctorClinicalNotes" rows="4" class="form-input" style="height:auto; padding:10px; resize:vertical; font-size:13px;" placeholder="Type diagnostic impressions, clinical evaluation, and advice...">${enc.doctor_notes || 'Citizen phone encounter reviewed. OPD consultation in progress.'}</textarea>
+            <textarea id="doctorClinicalNotes" rows="4" class="form-input" style="height:auto; padding:10px; resize:vertical; font-size:13px;" placeholder="Type diagnostic impressions, clinical evaluation, and advice...">${enc.doctor_notes || ''}</textarea>
           </div>
 
           <!-- E-Prescription Pad -->
           <div style="display:flex; flex-direction:column; gap:var(--space-2);">
             <div style="display:flex; justify-content:space-between; align-items:center;">
               <span style="font-size:12px; font-weight:700; text-transform:uppercase; color:var(--text-muted);">Digital E-Prescription</span>
-              <span class="badge badge-teal" style="font-size:10px;">${medications.length > 0 ? `${medications.length} Prescribed` : 'AYUSH Reconciled'}</span>
+              <span class="badge ${medications.length > 0 ? 'badge-teal' : 'badge-amber'}" style="font-size:10px;">${medications.length > 0 ? `${medications.length} Recorded` : 'Nothing recorded'}</span>
             </div>
             
             ${medications.length > 0 ? medications.map((m, idx) => `
@@ -193,13 +204,12 @@ export function renderConsultationCockpit(encounterDetail, onVerifyCallback) {
                   <span class="badge badge-green" style="font-size:10px;">${m.provenance_tier || 'OCR'}</span>
                 </div>
                 <div style="font-size:11px; color:var(--text-secondary);">
-                  Dose: <strong>${m.dose || '1 Tab BD'}</strong> · Frequency: <strong>${m.frequency || 'After meals'}</strong>
+                  Dose: <strong>${m.dose || 'Not specified'}</strong> · Frequency: <strong>${m.frequency || 'Not specified'}</strong>
                 </div>
               </div>
             `).join('') : `
-              <div style="padding:10px 12px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px solid var(--border-default); display:flex; flex-direction:column; gap:4px;">
-                <div style="font-size:13px; font-weight:700; color:var(--text-primary);">1. Syp. Tulsi-Vasa 10ml</div>
-                <div style="font-size:11px; color:var(--text-secondary);">Dose: 2 tsp BD with warm water · Duration: 7 Days (Ayurvedic Cough Formulation)</div>
+              <div style="padding:10px 12px; background:var(--bg-surface-soft); border-radius:var(--radius-md); border:1px dashed var(--border-default); font-size:12px; color:var(--text-muted);">
+                No medication captured for this encounter. Record prescriptions in the clinical notes before sign-off.
               </div>
             `}
           </div>

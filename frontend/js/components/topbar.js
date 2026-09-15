@@ -3,13 +3,16 @@
  */
 
 import { store } from '../store.js';
+import { authApi } from '../api/auth.api.js';
 
 export function renderTopbar(currentPath) {
   const state = store.getState();
   const isOnline = state.ui.networkOnline;
   const isDoctorAuth = store.isDoctorAuthenticated();
-  const isPatientAuth = state.auth.isAuthenticated && state.auth.role === 'patient';
+  const isPatientAuth = store.isPatientAuthenticated();
   const patientName = state.auth.user ? state.auth.user.full_name : null;
+  const doctorName = state.doctor.profile?.full_name || 'Doctor';
+  const doctorId = state.doctor.profile?.id || '';
 
   return `
     <header class="topbar">
@@ -32,10 +35,10 @@ export function renderTopbar(currentPath) {
         <a href="#/kiosk/welcome" class="topbar__portal-btn ${currentPath.startsWith('/kiosk') ? 'active' : ''}">
           <i class="fa-solid fa-hospital" aria-hidden="true"></i> OPD Kiosk
         </a>
-        <a href="#/patient/dashboard" class="topbar__portal-btn ${currentPath.startsWith('/patient') ? 'active' : ''}">
+        <a href="#/patient/login" class="topbar__portal-btn ${currentPath.startsWith('/patient') || currentPath.startsWith('/register') ? 'active' : ''}">
           <i class="fa-solid fa-user" aria-hidden="true"></i> Patient Portal
         </a>
-        <a href="#/doctor/queue" class="topbar__portal-btn ${currentPath.startsWith('/doctor') ? 'active' : ''}">
+        <a href="#/doctor/login" class="topbar__portal-btn ${currentPath.startsWith('/doctor') ? 'active' : ''}">
           <i class="fa-solid fa-user-doctor" aria-hidden="true"></i> Doctor Station
         </a>
         <a href="#/ivr" class="topbar__portal-btn ${currentPath.startsWith('/ivr') ? 'active' : ''}">
@@ -54,12 +57,13 @@ export function renderTopbar(currentPath) {
         </span>
 
         ${isDoctorAuth ? `
-          <span class="badge badge-blue">Dr. S. Verma (Cabin 102)</span>
+          <span class="badge badge-blue" title="${doctorId}">${doctorName}</span>
           <button class="btn btn-ghost btn-sm" onclick="window.doctorLogout()">Sign Out</button>
         ` : isPatientAuth ? `
           <span class="badge badge-teal">${patientName || 'Patient'}</span>
           <button class="btn btn-ghost btn-sm" onclick="window.patientLogout()">Sign Out</button>
         ` : `
+          <a href="#/register" class="btn btn-secondary btn-sm">Register</a>
           <a href="#/account-type" class="btn btn-secondary btn-sm">Select Portal</a>
         `}
       </div>
@@ -68,12 +72,14 @@ export function renderTopbar(currentPath) {
 }
 
 // Global logout handlers
-window.doctorLogout = () => {
+window.doctorLogout = async () => {
+  try { await authApi.logout?.(); } catch { /* ignore */ }
   store.setDoctorAuthenticated(false);
   window.location.hash = '#/doctor/login';
 };
 
-window.patientLogout = () => {
+window.patientLogout = async () => {
+  try { await authApi.logout?.(); } catch { /* ignore */ }
   store.setUser(null);
   window.location.hash = '#/patient/login';
 };

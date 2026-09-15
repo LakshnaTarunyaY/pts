@@ -174,30 +174,46 @@ def test_document_upload_pipeline(client):
     assert "ocr_status" in up_data
 
 
+def _doctor_headers(client, doctor_id="doc-verma"):
+    res = client.post("/api/auth/login", json={"identifier": doctor_id, "role": "doctor"})
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['session_token']}"}
+
+
+def _patient_headers(client, abha_id="91-4821-3910-4819"):
+    res = client.post("/api/auth/login", json={"identifier": abha_id, "role": "patient"})
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['session_token']}"}
+
+
 def test_auth_and_hospital_directory(client):
-    """Verify unified login and hospital OPD directory."""
-    # 1. Doctor PIN login
+    """Verify ID-based login (no passwords) and hospital OPD directory."""
+    # 1. Doctor logs in with Doctor ID only
     doc_login = client.post("/api/auth/login", json={
         "identifier": "doc-verma",
-        "password": "1234",
         "role": "doctor"
     })
     assert doc_login.status_code == 200
     d_data = doc_login.json()
     assert d_data["authenticated"] is True
     assert d_data["user"]["role"] == "doctor"
-    assert d_data["user"]["room_number"] == "Room 102"
+    assert d_data["session_token"]
 
-    # 2. Patient login via mobile
+    # 2. Patient logs in with ABHA ID only; mobile number is no longer a credential
     pat_login = client.post("/api/auth/login", json={
-        "identifier": "9876543210",
-        "password": "patient123",
+        "identifier": "91-4821-3910-4819",
         "role": "patient"
     })
     assert pat_login.status_code == 200
     p_data = pat_login.json()
     assert p_data["authenticated"] is True
     assert p_data["user"]["abha_id"] == "91-4821-3910-4819"
+    assert p_data["session_token"]
+
+    assert client.post("/api/auth/login", json={
+        "identifier": "9876543210",
+        "role": "patient"
+    }).status_code == 404
 
     # 3. Hospital OPD directory
     dir_res = client.get("/api/auth/directory")
@@ -208,10 +224,27 @@ def test_auth_and_hospital_directory(client):
     assert dir_data["opd_reception_phone"] == "+91-11-26950401"
 
 
+def test_doctor_me_reflects_logged_in_doctor(client):
+    """Workstation header data must come from the session, never a hardcoded physician."""
+    assert client.get("/api/doctor/me").status_code == 401
+
+    me = client.get("/api/doctor/me", headers=_doctor_headers(client))
+    assert me.status_code == 200
+    body = me.json()
+    assert body["doctor"]["id"] == "doc-verma"
+    stats = body["stats"]
+    assert {"waiting_patients", "critical_patients", "average_consult_minutes"} <= set(stats)
+    assert stats["average_consult_minutes"] is None or stats["average_consult_minutes"] >= 0
+
+
 def test_doctor_abha_lookup_and_verify(client):
     """Verify doctor can retrieve longitudinal patient records by ABHA and verify cases."""
-    # 1. Look up patient by ABHA ID
-    abha_res = client.get("/api/doctor/patient/by-abha/91-4821-3910-4819")
+    headers = _doctor_headers(client)
+
+    # 1. Anonymous lookups are rejected; authorized doctors get the record
+    assert client.get("/api/doctor/patient/by-abha/91-4821-3910-4819").status_code == 401
+
+    abha_res = client.get("/api/doctor/patient/by-abha/91-4821-3910-4819", headers=headers)
     assert abha_res.status_code == 200
     abha_data = abha_res.json()
     assert abha_data["abha_id"] == "91-4821-3910-4819"
@@ -225,12 +258,14 @@ def test_doctor_abha_lookup_and_verify(client):
     })
     enc_id = b_res.json()["encounter_id"]
 
+    # A spoofed doctor_id must be ignored in favour of the session identity
     verify_res = client.post(
         f"/api/doctor/encounter/{enc_id}/verify",
         params={
-            "doctor_id": "doc-verma",
+            "doctor_id": "doc-someone-else",
             "notes": "Verified fever & headache intake. Advised Sudarshana Ghanavati and rest."
-        }
+        },
+        headers=headers,
     )
     assert verify_res.status_code == 200
     v_data = verify_res.json()
@@ -240,13 +275,28 @@ def test_doctor_abha_lookup_and_verify(client):
 
 def test_patient_dashboard_endpoint(client):
     """Verify patient portal dashboard with active token and clinical history."""
-    dash_res = client.get("/api/patient/dashboard/91-4821-3910-4819")
+    assert client.get("/api/patient/dashboard/91-4821-3910-4819").status_code == 401
+
+    headers = _patient_headers(client)
+    dash_res = client.get("/api/patient/dashboard/91-4821-3910-4819", headers=headers)
     assert dash_res.status_code == 200
     dash = dash_res.json()
     assert "profile" in dash
     assert dash["profile"]["abha_id"] == "91-4821-3910-4819"
     assert "active_token" in dash
     assert "encounters" in dash
+
+    # Unverified visits must not carry a fabricated physician or note
+    for enc in dash["encounters"]:
+        verification = enc["doctor_verification"]
+        if not verification["is_verified"]:
+            assert not verification["doctor_name"]
+            assert not verification["doctor_notes"]
+
+    # Another patient's record stays out of reach
+    assert client.get(
+        "/api/patient/dashboard/91-0000-0000-0000", headers=headers
+    ).status_code in (403, 404)
 
 
 def test_encounter_language_update_and_multilingual_call(client):

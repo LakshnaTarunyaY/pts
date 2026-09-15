@@ -78,6 +78,34 @@ class OCRService:
                 logger.error(f"Failed to load RapidOCR: {e}")
                 raise
 
+    def extract_text(self, path_or_bytes) -> dict:
+        """
+        Compatibility helper used by patient portal / registration uploads.
+        Accepts a filesystem path or raw bytes and returns a plain dict:
+          { "text": str, "lines": list, "overall_confidence": float }
+        OCR failures never raise — callers can always persist the file.
+        """
+        try:
+            if isinstance(path_or_bytes, (bytes, bytearray)):
+                image_bytes = bytes(path_or_bytes)
+            else:
+                p = Path(str(path_or_bytes))
+                suffix = p.suffix.lower()
+                if suffix in {".pdf", ".doc", ".docx", ".txt"}:
+                    # Non-image uploads are stored as-is; OCR is image-only today.
+                    return {"text": "", "lines": [], "overall_confidence": 0.0}
+                image_bytes = p.read_bytes()
+            result = self.process_image(image_bytes)
+            payload = result.to_dict()
+            return {
+                "text": payload.get("raw_text") or "",
+                "lines": payload.get("lines") or [],
+                "overall_confidence": payload.get("overall_confidence") or 0.0,
+            }
+        except Exception as e:
+            logger.warning(f"extract_text skipped: {e}")
+            return {"text": "", "lines": [], "overall_confidence": 0.0}
+
     def process_image(self, image_bytes: bytes) -> OCRResult:
         """
         Process a prescription/document image and extract text lines with bounding boxes.

@@ -1,89 +1,127 @@
 /**
- * MediKiosk Web — Page 29: Doctor PIN Authentication
- * Clean, high-security clinical gate (Default PIN: 1234)
+ * MediKiosk Web — Doctor ID Login (no PIN / password)
  */
 
 import { store } from '../../store.js';
-import { doctorApi } from '../../api/doctor.api.js';
+import { authApi } from '../../api/auth.api.js';
 
 export function renderDoctorLogin() {
   return `
-    <div style="min-height:calc(100vh - var(--header-height)); display:flex; align-items:center; justify-content:center; padding:var(--space-6); background:var(--bg-canvas);">
-      <div class="card" style="width:100%; max-width:440px; padding:var(--space-8); box-shadow:var(--shadow-xl); border:1.5px solid var(--border-default);">
-        <div style="text-align:center; margin-bottom:var(--space-6);">
-          <div class="doctor-login__icon" aria-hidden="true">
+    <div class="auth-shell">
+      <div class="auth-card">
+        <div class="auth-card__header">
+          <div class="auth-card__icon auth-card__icon--doctor" aria-hidden="true">
             <i class="fa-solid fa-user-doctor"></i>
           </div>
-          <h2 class="text-h2">Doctor Workstation</h2>
-          <p style="font-size:14px; color:var(--text-secondary); margin-top:4px;">
-            Clinical Command Center · All India Institute of Ayurveda
+          <h2 class="text-h2">Doctor Login</h2>
+          <p class="auth-card__subtitle">
+            Enter your Doctor ID to open the clinical workstation.
           </p>
         </div>
 
-        <!-- Evaluation Demo Banner -->
-        <div style="background:var(--brand-tint); border:1px dashed var(--brand-primary); border-radius:var(--radius-md); padding:10px; text-align:center; margin-bottom:var(--space-6);">
-          <div style="font-size:11px; font-weight:700; color:var(--brand-dark);">QUICK EVALUATION DEMO</div>
-          <div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-top:2px;">
-            Default Doctor PIN: <code style="background:#fff; padding:2px 6px; border-radius:4px; font-weight:800;">1234</code>
-          </div>
+        <div class="auth-demo-hint" id="doctorDemoHint" style="display:none;">
+          <div class="auth-demo-hint__label">Registered doctor on this edge server</div>
+          <button type="button" id="btnQuickDoctorDemo" class="btn btn-secondary btn-lg" style="width:100%; justify-content:center;">
+            Continue
+          </button>
         </div>
 
-        <form id="doctorLoginForm" style="display:flex; flex-direction:column; gap:var(--space-4);">
+        <form id="doctorLoginForm" class="auth-form">
           <div>
-            <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; color:var(--text-secondary);">
-              Clinician ID / Staff Username
-            </label>
-            <input type="text" id="doctorUsernameInput" value="doc-verma" class="form-input" placeholder="e.g. doc-verma" required />
+            <label class="auth-label" for="doctorIdInput">Doctor ID</label>
+            <input
+              type="text"
+              id="doctorIdInput"
+              class="form-input auth-input"
+              placeholder="e.g. doc-1a2b3c4d"
+              autocomplete="username"
+              required
+            />
           </div>
 
-          <div>
-            <label style="display:block; font-size:12px; font-weight:700; margin-bottom:4px; color:var(--text-secondary);">
-              4-Digit Security PIN
-            </label>
-            <input type="password" id="doctorPinInput" maxlength="6" value="1234" class="form-input" placeholder="••••" required style="letter-spacing:4px; font-size:18px; font-weight:700; text-align:center;" />
-          </div>
+          <div id="doctorLoginError" class="auth-error" style="display:none;"></div>
+          <div id="doctorLoginActions" class="auth-error-actions" style="display:none;"></div>
 
-          <div id="doctorLoginError" style="color:var(--status-danger); font-size:12px; display:none;"></div>
-
-          <button type="submit" class="btn btn-primary btn-lg" style="width:100%; justify-content:center; margin-top:var(--space-2);">
-            Access Clinical Workstation →
+          <button type="submit" class="btn btn-primary btn-lg auth-submit">
+            Login
           </button>
         </form>
 
-        <div style="text-align:center; margin-top:var(--space-6); font-size:12px; color:var(--text-muted);">
-          Authorized medical attendants & registered OPD physicians only.
+        <div class="auth-footer">
+          New doctor?
+          <a href="#/register">Register / Sign Up</a>
         </div>
       </div>
     </div>
   `;
 }
 
-export function initDoctorLogin() {
-  const form = document.getElementById('doctorLoginForm');
-  const pinInput = document.getElementById('doctorPinInput');
+function showError(code, message) {
   const errorMsg = document.getElementById('doctorLoginError');
+  const actions = document.getElementById('doctorLoginActions');
+  if (!errorMsg) return;
 
-  if (form) {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const pin = pinInput.value.trim();
+  errorMsg.textContent = message || 'Login failed';
+  errorMsg.style.display = 'block';
 
-      try {
-        await doctorApi.auth(pin);
-        store.setDoctorAuthenticated(true);
-        window.location.hash = '#/doctor/queue';
-      } catch (err) {
-        if (pin === '1234') {
-          // Fallback bypass
-          store.setDoctorAuthenticated(true);
-          window.location.hash = '#/doctor/queue';
-        } else {
-          if (errorMsg) {
-            errorMsg.textContent = 'Invalid PIN. Please enter 1234 for hackathon evaluation.';
-            errorMsg.style.display = 'block';
-          }
-        }
-      }
-    });
+  if (actions) {
+    if (code === 'DOCTOR_NOT_REGISTERED') {
+      actions.innerHTML = `<a class="btn btn-secondary btn-lg" href="#/register/doctor" style="width:100%; justify-content:center;">Register / Sign Up</a>`;
+      actions.style.display = 'block';
+    } else {
+      actions.innerHTML = `<button type="button" class="btn btn-ghost btn-lg" id="btnDoctorTryAgain" style="width:100%; justify-content:center;">Try Again</button>`;
+      actions.style.display = 'block';
+      document.getElementById('btnDoctorTryAgain')?.addEventListener('click', () => {
+        errorMsg.style.display = 'none';
+        actions.style.display = 'none';
+        document.getElementById('doctorIdInput')?.focus();
+      });
+    }
   }
+}
+
+export function initDoctorLogin(query = {}) {
+  const form = document.getElementById('doctorLoginForm');
+  const idInput = document.getElementById('doctorIdInput');
+  const demoBtn = document.getElementById('btnQuickDoctorDemo');
+  const demoHint = document.getElementById('doctorDemoHint');
+
+  if (query.id && idInput) {
+    idInput.value = query.id;
+  }
+
+  // The quick-login shortcut reflects whoever is actually registered on this server
+  authApi.getDirectory()
+    .then((dir) => {
+      const doctor = (dir.doctors || [])[0];
+      if (!doctor || !demoBtn || !demoHint) return;
+      demoBtn.textContent = `Continue as ${doctor.full_name} (${doctor.id})`;
+      demoBtn.dataset.doctorId = doctor.id;
+      demoHint.style.display = 'block';
+    })
+    .catch(() => { /* directory unavailable — manual entry only */ });
+
+  demoBtn?.addEventListener('click', () => {
+    const id = demoBtn.dataset.doctorId;
+    if (!id || !idInput) return;
+    idInput.value = id;
+    form?.dispatchEvent(new Event('submit'));
+  });
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const doctorId = idInput?.value.trim();
+    if (!doctorId) {
+      showError('INVALID_DOCTOR_ID', 'Invalid Doctor ID');
+      return;
+    }
+
+    try {
+      const res = await authApi.login(doctorId, 'doctor');
+      store.setDoctorAuthenticated(true, res.user, res.session_token);
+      window.location.hash = '#/doctor/queue';
+    } catch (err) {
+      showError(err.code || 'INVALID_DOCTOR_ID', err.message || 'Invalid Doctor ID');
+    }
+  });
 }

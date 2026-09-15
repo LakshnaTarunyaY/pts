@@ -10,14 +10,17 @@ from app.schemas.encounter import EncounterSummary
 
 
 class DoctorAuthRequest(BaseModel):
-    """Doctor PIN authentication request."""
-    pin: str = Field(description="4-digit doctor PIN")
+    """Doctor authentication — prefer doctor_id; pin kept for legacy clinical clients."""
+    doctor_id: Optional[str] = Field(default=None, description="Application Doctor ID")
+    pin: Optional[str] = Field(default=None, description="Legacy 4-digit PIN (optional)")
 
 
 class DoctorAuthResponse(BaseModel):
     """Doctor authentication response."""
     authenticated: bool
     message: str
+    doctor: Optional[dict] = None
+    session_token: Optional[str] = None
 
 
 class PatientQueueEntry(BaseModel):

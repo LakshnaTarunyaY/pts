@@ -32,6 +32,10 @@ class EncounterBootstrapRequest(BaseModel):
         description="Which intake channel is initiating this encounter"
     )
     language: Literal["en", "hi", "ta", "te", "mr"] = Field(default="hi", description="Preferred language code (en, hi, ta, te, mr)")
+    abha_id: Optional[str] = Field(
+        default=None,
+        description="Optional returning-patient ABHA — reuses existing patient identity for longitudinal record",
+    )
 
 
 class EncounterBootstrapResponse(BaseModel):
@@ -40,7 +44,15 @@ class EncounterBootstrapResponse(BaseModel):
     patient_id: str
     token_number: str
     status: str = "BOOTSTRAPPED"
+    abha_id: Optional[str] = None
+    returning_patient: bool = False
+    patient_name: Optional[str] = None
     supported_languages: list[LanguageOption] = Field(default_factory=lambda: SUPPORTED_LANGUAGES)
+
+
+class EncounterLinkAbhaRequest(BaseModel):
+    """Link an existing walk-in encounter to a registered ABHA patient."""
+    abha_id: str
 
 
 class EncounterSummary(BaseModel):

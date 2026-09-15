@@ -38,41 +38,41 @@ export function renderAccountTypePage() {
         </a>
 
         <!-- Card 2: Patient Portal -->
-        <a href="#/patient/dashboard" class="card card-interactive" style="text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; min-height:280px;">
+        <a href="#/patient/login" class="card card-interactive" style="text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; min-height:280px;">
           <div>
             <div class="portal-card__icon portal-card__icon--patient" aria-hidden="true">
               <i class="fa-solid fa-user"></i>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--space-2);">
               <h3 class="text-h3" style="color:var(--text-primary);">Patient Health Portal</h3>
-              <span class="badge badge-purple">ABHA Citizen</span>
+              <span class="badge badge-purple">ABHA Login</span>
             </div>
             <p style="font-size:14px; color:var(--text-secondary); line-height:1.5;">
-              Citizens can log in with ABHA ID to view digital health cards, check live OPD token queue position, review doctor-verified prescriptions, and upload documents.
+              Citizens log in with ABHA ID to view digital health cards, live OPD tokens, verified prescriptions, and uploaded documents.
             </p>
           </div>
           <div style="margin-top:var(--space-6); display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-weight:700; color:#7E22CE; font-size:14px;">Open Patient Portal →</span>
+            <span style="font-weight:700; color:#7E22CE; font-size:14px;">Patient Login →</span>
             <span class="badge badge-blue">Citizen Access</span>
           </div>
         </a>
 
         <!-- Card 3: Doctor Workstation -->
-        <a href="#/doctor/queue" class="card card-interactive" style="text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; min-height:280px;">
+        <a href="#/doctor/login" class="card card-interactive" style="text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; min-height:280px;">
           <div>
             <div class="portal-card__icon portal-card__icon--doctor" aria-hidden="true">
               <i class="fa-solid fa-user-doctor"></i>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--space-2);">
               <h3 class="text-h3" style="color:var(--text-primary);">Doctor Station</h3>
-              <span class="badge badge-amber">PIN: 1234</span>
+              <span class="badge badge-amber">Doctor ID</span>
             </div>
             <p style="font-size:14px; color:var(--text-secondary); line-height:1.5;">
               Single Pane of Glass where all 3 intake channels converge. 30-second triage synthesis, AYUSH Dashavidha Pariksha, and 1-click verification sign-off.
             </p>
           </div>
           <div style="margin-top:var(--space-6); display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-weight:700; color:var(--status-warning); font-size:14px;">Doctor Login (1234) →</span>
+            <span style="font-weight:700; color:var(--status-warning); font-size:14px;">Doctor Login →</span>
             <span class="badge badge-teal">Chamber 102</span>
           </div>
         </a>

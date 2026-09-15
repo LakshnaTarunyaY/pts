@@ -6,8 +6,9 @@ import { renderTopbar } from './components/topbar.js';
 import { store } from './store.js';
 
 // Import Views
-import { renderWelcomePage } from './pages/public/welcome.js';
+import { renderWelcomePage, initWelcomePage } from './pages/public/welcome.js';
 import { renderAccountTypePage } from './pages/public/account-type.js';
+import { renderRegisterRole, initRegisterRole } from './pages/public/register-role.js';
 import { renderKioskWelcome, initKioskWelcome, destroyKioskWelcome } from './pages/kiosk/kiosk-welcome.js';
 import { renderKioskLanguage, initKioskLanguage } from './pages/kiosk/kiosk-language.js';
 import { renderKioskConsent, initKioskConsent } from './pages/kiosk/kiosk-consent.js';
@@ -20,14 +21,23 @@ import { renderKioskAyush, initKioskAyush } from './pages/kiosk/kiosk-ayush.js';
 import { renderKioskQueueToken, initKioskQueueToken, destroyKioskQueueToken } from './pages/kiosk/kiosk-queue-token.js';
 import { renderKioskTriageAlert, initKioskTriageAlert } from './pages/kiosk/kiosk-triage-alert.js';
 import { renderDoctorLogin, initDoctorLogin } from './pages/doctor/doctor-login.js';
+import { renderDoctorRegister, initDoctorRegister } from './pages/doctor/doctor-register.js';
 import { renderDoctorQueue, initDoctorQueue, destroyDoctorQueue } from './pages/doctor/doctor-queue.js';
 import { renderDoctorPatient, initDoctorPatient } from './pages/doctor/doctor-patient.js';
 import { renderPatientLogin, initPatientLogin } from './pages/patient/patient-login.js';
+import { renderPatientRegister, initPatientRegister } from './pages/patient/patient-register.js';
 import { renderPatientDashboard, initPatientDashboard } from './pages/patient/patient-dashboard.js';
 import { renderIvrSimulator, initIvrSimulator } from './pages/ivr/ivr-simulator.js';
 import { renderKioskAvatarPreview, initKioskAvatarPreview, destroyKioskAvatarPreview } from './pages/kiosk/kiosk-avatar-preview.js';
 
 let currentDestroyFn = null;
+
+function getHashQuery() {
+  const fullHash = window.location.hash.slice(1) || '';
+  const qIndex = fullHash.indexOf('?');
+  if (qIndex === -1) return {};
+  return Object.fromEntries(new URLSearchParams(fullHash.slice(qIndex + 1)));
+}
 
 export class Router {
   constructor(appElement) {
@@ -52,13 +62,19 @@ export class Router {
 
     const fullHash = window.location.hash.slice(1) || '/welcome';
     const [path] = fullHash.split('?');
+    const query = getHashQuery();
 
     // Route Guards
-    if (path.startsWith('/doctor') && path !== '/doctor/login') {
+    if (path.startsWith('/doctor') && path !== '/doctor/login' && path !== '/doctor/register') {
       if (!store.isDoctorAuthenticated()) {
         window.location.hash = '#/doctor/login';
         return;
       }
+    }
+
+    if ((path === '/patient/dashboard' || path === '/patient/queue') && !store.isPatientAuthenticated()) {
+      window.location.hash = '#/patient/login';
+      return;
     }
 
     // Dynamic Parameter Matching (e.g. /doctor/patient/:id)
@@ -72,10 +88,21 @@ export class Router {
       // Public
       case '/':
       case '/welcome':
-        this._renderView(path, renderWelcomePage);
+        this._renderView(path, renderWelcomePage, initWelcomePage);
         break;
       case '/account-type':
         this._renderView(path, renderAccountTypePage);
+        break;
+      case '/register':
+        this._renderView(path, renderRegisterRole, initRegisterRole);
+        break;
+      case '/register/patient':
+      case '/patient/register':
+        this._renderView(path, renderPatientRegister, initPatientRegister);
+        break;
+      case '/register/doctor':
+      case '/doctor/register':
+        this._renderView(path, renderDoctorRegister, initDoctorRegister);
         break;
 
       // Kiosk Walk-in Flow
@@ -118,7 +145,7 @@ export class Router {
 
       // Doctor Portal
       case '/doctor/login':
-        this._renderView(path, renderDoctorLogin, initDoctorLogin);
+        this._renderView(path, renderDoctorLogin, () => initDoctorLogin(query));
         break;
       case '/doctor/queue':
         this._renderView(path, renderDoctorQueue, initDoctorQueue, destroyDoctorQueue);
@@ -126,7 +153,7 @@ export class Router {
 
       // Patient Portal
       case '/patient/login':
-        this._renderView(path, renderPatientLogin, initPatientLogin);
+        this._renderView(path, renderPatientLogin, () => initPatientLogin(query));
         break;
       case '/patient/dashboard':
       case '/patient/queue':

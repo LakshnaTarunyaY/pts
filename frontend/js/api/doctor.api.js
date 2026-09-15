@@ -1,27 +1,49 @@
 import { api } from './client.js';
+import { store } from '../store.js';
 
 export const doctorApi = {
-  // PIN authentication (PIN: 1234)
-  auth: (pin) => 
-    api.post('/api/doctor/auth', { pin }),
+  // Prefer Doctor ID auth; pin retained for legacy callers — both return session_token
+  auth: async (doctorIdOrPin, maybePin) => {
+    let body;
+    if (maybePin !== undefined) {
+      body = { doctor_id: doctorIdOrPin, pin: maybePin };
+    } else if (typeof doctorIdOrPin === 'string' && doctorIdOrPin.startsWith('doc-')) {
+      body = { doctor_id: doctorIdOrPin };
+    } else {
+      body = { pin: doctorIdOrPin };
+    }
+    const res = await api.post('/api/doctor/auth', body);
+    if (res?.session_token) {
+      store.setSessionToken(res.session_token, { persist: false });
+    }
+    if (res?.doctor) {
+      store.setDoctorAuthenticated(true, res.doctor, res.session_token);
+    }
+    return res;
+  },
 
-  // Get active OPD doctor triage queue
-  getQueue: () => 
-    api.get('/api/doctor/queue'),
+  getQueue: () => api.get('/api/doctor/queue'),
 
-  // Get full clinical patient details
-  getPatientDetail: (encounterId) => 
+  // Logged-in doctor's own profile + live workstation stats
+  me: async () => {
+    const res = await api.get('/api/doctor/me');
+    if (res?.doctor) store.setDoctorProfile(res.doctor);
+    return res;
+  },
+
+  getPatientDetail: (encounterId) =>
     api.get(`/api/doctor/patient/${encounterId}`),
 
-  // Longitudinal patient timeline by ABHA
-  getPatientByAbha: (abhaId) => 
+  getPatientByAbha: (abhaId) =>
     api.get(`/api/doctor/patient/by-abha/${encodeURIComponent(abhaId)}`),
 
-  // Call next patient into doctor chamber
-  callNextPatient: (encounterId) => 
-    api.post(`/api/doctor/patient/${encounterId}/call-next`, {}),
+  callNextPatient: (encounterId) =>
+    api.post(`/api/doctor/patient/${encodeURIComponent(encounterId)}/call-next`, {}),
 
-  // Sign off & verify clinical encounter
-  verifyEncounter: (encounterId, doctorId = 'doc-verma', notes = 'Clinical history verified.') => 
-    api.post(`/api/doctor/encounter/${encounterId}/verify?doctor_id=${encodeURIComponent(doctorId)}&notes=${encodeURIComponent(notes)}`, {})
+  // doctor_id is derived from the session server-side; notes are the only payload
+  verifyEncounter: (encounterId, notes = 'Clinical history verified.') =>
+    api.post(
+      `/api/doctor/encounter/${encodeURIComponent(encounterId)}/verify?notes=${encodeURIComponent(notes)}`,
+      {}
+    ),
 };

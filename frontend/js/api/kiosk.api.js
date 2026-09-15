@@ -6,7 +6,11 @@ export const kioskApi = {
     device_channel: data.device_channel || 'kiosk',
     language: data.language || 'hi',
     qr_token: data.qr_token || null,
+    abha_id: data.abha_id || null,
   }),
+
+  linkAbha: (encounterId, abhaId) =>
+    api.post(`/api/encounters/${encodeURIComponent(encounterId)}/link-abha`, { abha_id: abhaId }),
 
   // Get encounter details
   getEncounter: (encounterId) => 

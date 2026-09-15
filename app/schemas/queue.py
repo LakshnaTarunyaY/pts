@@ -15,3 +15,4 @@ class QueueStatusResponse(BaseModel):
     patients_ahead: int = 0
     estimated_wait_minutes: int = 0
     doctor_room: Optional[str] = None
+    doctor_name: Optional[str] = None

@@ -1082,7 +1082,7 @@ function initDoctorDashboard() {
       try {
         const mainPanel = document.getElementById('doctorMain');
         mainPanel.innerHTML = '<div class="empty-state"><div class="spinner spinner-lg"></div><div>Searching ABHA longitudinal history...</div></div>';
-        const data = await api.getPatientByAbha(abhaId);
+        const data = await api.getPatientByAbha(abhaId, state.activeDoctorId || 'doc-verma');
         renderAbhaPatientHistory(data);
       } catch (err) {
         alert('ABHA Lookup failed: ' + err.message);
@@ -1652,7 +1652,7 @@ async function loadPatientDetail(encounterId) {
         try {
           signBtn.disabled = true;
           signBtn.textContent = 'Saving Sign-off...';
-          await api.verifyEncounter(encounterId, state.activeDoctorId, notes);
+          await api.verifyEncounter(encounterId, notes);
           loadPatientDetail(encounterId);
           loadDoctorQueue();
         } catch (e) {

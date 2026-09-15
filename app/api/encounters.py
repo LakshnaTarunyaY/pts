@@ -1,15 +1,19 @@
 """
 MediKiosk — Encounter Bootstrap API
 POST /api/encounters/bootstrap — Initializes a new patient encounter.
+Optional ABHA links the visit to an existing registered patient (longitudinal).
 """
 
+import json
+import re
 import uuid
 import logging
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from app.database import get_db
 from app.schemas.encounter import (
     EncounterBootstrapRequest,
     EncounterBootstrapResponse,
+    EncounterLinkAbhaRequest,
     EncounterSummary,
     EncounterStatusUpdate,
     EncounterLanguageUpdate,
@@ -18,6 +22,14 @@ from app.schemas.encounter import (
 
 logger = logging.getLogger("medikiosk.api.encounters")
 router = APIRouter(prefix="/api/encounters", tags=["Encounters"])
+
+
+def _normalize_abha(value: str) -> str:
+    raw = (value or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 14:
+        return f"{digits[:2]}-{digits[2:6]}-{digits[6:10]}-{digits[10:14]}"
+    return raw
 
 
 async def _generate_unique_token(db, requested_token: str | None = None) -> str:
@@ -42,6 +54,41 @@ async def _generate_unique_token(db, requested_token: str | None = None) -> str:
     return f"T-{uuid.uuid4().hex[:6].upper()}"
 
 
+async def _resolve_patient_by_abha(db, abha_raw: str | None):
+    """Return (patient_id, abha_id, full_name, returning) for a registered ABHA."""
+    if not abha_raw or not str(abha_raw).strip():
+        return None, None, None, False
+
+    abha = _normalize_abha(str(abha_raw))
+    cursor = await db.execute(
+        "SELECT id, abha_id, full_name FROM users WHERE role = 'patient' AND abha_id = ?",
+        (abha,),
+    )
+    user = await cursor.fetchone()
+    if not user and abha != abha_raw.strip():
+        cursor = await db.execute(
+            "SELECT id, abha_id, full_name FROM users WHERE role = 'patient' AND abha_id = ?",
+            (abha_raw.strip(),),
+        )
+        user = await cursor.fetchone()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ABHA_NOT_REGISTERED", "message": "ABHA Not Registered"},
+        )
+
+    # Ensure patients master row exists for EMR continuity
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO patients (id, name, age, gender, phone, abha_id)
+        SELECT id, full_name, age, gender, mobile, abha_id FROM users WHERE id = ?
+        """,
+        (user["id"],),
+    )
+    return user["id"], user["abha_id"], user["full_name"], True
+
+
 @router.post("/bootstrap", response_model=EncounterBootstrapResponse)
 async def bootstrap_encounter(request: EncounterBootstrapRequest, db=Depends(get_db)):
     """
@@ -49,17 +96,28 @@ async def bootstrap_encounter(request: EncounterBootstrapRequest, db=Depends(get
 
     Creates an encounter record, assigns a queue token, and returns
     supported languages. This is the first API call from any intake channel.
+
+    If abha_id is provided and registered, reuses that patient identity
+    (new encounter, same patient — longitudinal continuity).
+    Anonymous walk-in still works without ABHA.
     """
     encounter_id = f"enc-{uuid.uuid4().hex[:8]}"
-    patient_id = f"pat-{uuid.uuid4().hex[:8]}"
     token = await _generate_unique_token(db, request.qr_token)
+
+    patient_id = f"pat-{uuid.uuid4().hex[:8]}"
+    abha_id = None
+    patient_name = None
+    returning = False
+
+    if request.abha_id:
+        patient_id, abha_id, patient_name, returning = await _resolve_patient_by_abha(db, request.abha_id)
 
     await db.execute(
         """
-        INSERT INTO encounters (id, patient_id, token_number, language, channel, status)
-        VALUES (?, ?, ?, ?, ?, 'BOOTSTRAPPED')
+        INSERT INTO encounters (id, patient_id, abha_id, token_number, language, channel, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'BOOTSTRAPPED')
         """,
-        (encounter_id, patient_id, token, request.language, request.device_channel)
+        (encounter_id, patient_id, abha_id, token, request.language, request.device_channel)
     )
 
     await db.execute(
@@ -75,20 +133,73 @@ async def bootstrap_encounter(request: EncounterBootstrapRequest, db=Depends(get
         INSERT INTO audit_log (encounter_id, actor, action, details)
         VALUES (?, 'system', 'encounter_bootstrapped', ?)
         """,
-        (encounter_id, f'{{"channel": "{request.device_channel}", "language": "{request.language}"}}')
+        (
+            encounter_id,
+            json.dumps({
+                "channel": request.device_channel,
+                "language": request.language,
+                "abha_id": abha_id,
+                "returning_patient": returning,
+            }),
+        ),
     )
 
     await db.commit()
 
-    logger.info(f"Encounter bootstrapped: {encounter_id} (token={token}, channel={request.device_channel})")
+    logger.info(
+        f"Encounter bootstrapped: {encounter_id} (token={token}, channel={request.device_channel}, "
+        f"abha={abha_id}, returning={returning})"
+    )
 
     return EncounterBootstrapResponse(
         encounter_id=encounter_id,
         patient_id=patient_id,
         token_number=token,
         status="BOOTSTRAPPED",
+        abha_id=abha_id,
+        returning_patient=returning,
+        patient_name=patient_name,
         supported_languages=SUPPORTED_LANGUAGES
     )
+
+
+@router.post("/{encounter_id}/link-abha")
+async def link_encounter_abha(encounter_id: str, request: EncounterLinkAbhaRequest, db=Depends(get_db)):
+    """
+    Attach a registered ABHA to an already-started walk-in encounter.
+    Does not create a new patient profile — reuses the existing one.
+    """
+    cursor = await db.execute("SELECT * FROM encounters WHERE id = ?", (encounter_id,))
+    enc = await cursor.fetchone()
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+
+    patient_id, abha_id, patient_name, _ = await _resolve_patient_by_abha(db, request.abha_id)
+
+    await db.execute(
+        "UPDATE encounters SET patient_id = ?, abha_id = ?, updated_at = datetime('now') WHERE id = ?",
+        (patient_id, abha_id, encounter_id),
+    )
+    await db.execute(
+        """
+        INSERT INTO audit_log (encounter_id, actor, action, details)
+        VALUES (?, ?, 'encounter_abha_linked', ?)
+        """,
+        (
+            encounter_id,
+            f"patient:{abha_id}",
+            json.dumps({"abha_id": abha_id, "patient_id": patient_id}),
+        ),
+    )
+    await db.commit()
+
+    return {
+        "encounter_id": encounter_id,
+        "patient_id": patient_id,
+        "abha_id": abha_id,
+        "patient_name": patient_name,
+        "message": "Encounter linked to existing patient ABHA",
+    }
 
 
 @router.get("/{encounter_id}", response_model=EncounterSummary)

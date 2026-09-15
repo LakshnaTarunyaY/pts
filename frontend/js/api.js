@@ -7,13 +7,20 @@ const API_BASE = '';  // Vite proxies /api to FastAPI
 
 async function request(url, options = {}) {
   try {
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
+    try {
+      const token = localStorage.getItem('medikiosk_session') || sessionStorage.getItem('medikiosk_session');
+      if (token) headers.Authorization = `Bearer ${token}`;
+    } catch { /* ignore */ }
     const res = await fetch(`${API_BASE}${url}`, {
-      headers: { 'Content-Type': 'application/json', ...options.headers },
       ...options,
+      headers,
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || `HTTP ${res.status}`);
+      const detail = err.detail;
+      const message = typeof detail === 'object' ? (detail.message || JSON.stringify(detail)) : (detail || `HTTP ${res.status}`);
+      throw new Error(message);
     }
     return res.json();
   } catch (err) {
@@ -29,10 +36,10 @@ export const api = {
   health: () => request('/api/health'),
 
   // ── Encounters ──
-  bootstrap: (language = 'hi', channel = 'kiosk') =>
+  bootstrap: (language = 'hi', channel = 'kiosk', abhaId = null) =>
     request('/api/encounters/bootstrap', {
       method: 'POST',
-      body: JSON.stringify({ language, device_channel: channel }),
+      body: JSON.stringify({ language, device_channel: channel, abha_id: abhaId }),
     }),
 
   getEncounter: (encounterId) =>
@@ -92,11 +99,22 @@ export const api = {
   queueStatus: (token) => request(`/api/queue/status/${token}`),
 
   // ── Doctor Dashboard ──
-  doctorAuth: (pin) =>
-    request('/api/doctor/auth', {
+  doctorAuth: async (pinOrDoctorId) => {
+    const body = typeof pinOrDoctorId === 'string' && pinOrDoctorId.startsWith('doc-')
+      ? { doctor_id: pinOrDoctorId }
+      : { pin: pinOrDoctorId };
+    const data = await request('/api/doctor/auth', {
       method: 'POST',
-      body: JSON.stringify({ pin }),
-    }),
+      body: JSON.stringify(body),
+    });
+    try {
+      if (data?.session_token) {
+        sessionStorage.setItem('medikiosk_session', data.session_token);
+        if (data.doctor) sessionStorage.setItem('medikiosk_doctor', JSON.stringify(data.doctor));
+      }
+    } catch { /* ignore */ }
+    return data;
+  },
 
   doctorQueue: () => request('/api/doctor/queue'),
 
@@ -107,16 +125,32 @@ export const api = {
     request(`/api/doctor/patient/${encounterId}/call-next`, { method: 'POST' }),
 
   // ── Unified Auth & Directory ──
-  login: (role, identifier, password) =>
+  login: (role, identifier, _password = null) =>
     request('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ role, identifier, password }),
+      body: JSON.stringify({ role, identifier }),
     }),
 
-  registerPatient: (patientData) =>
-    request('/api/auth/patient/register', {
+  registerPatient: async (patientData) => {
+    const form = new FormData();
+    Object.entries(patientData || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      form.append(key, value);
+    });
+    const res = await fetch('/api/auth/patient/register', { method: 'POST', body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = data.detail;
+      const message = typeof detail === 'object' ? (detail.message || JSON.stringify(detail)) : (detail || res.statusText);
+      throw new Error(message);
+    }
+    return data;
+  },
+
+  registerDoctor: (doctorData) =>
+    request('/api/auth/doctor/register', {
       method: 'POST',
-      body: JSON.stringify(patientData),
+      body: JSON.stringify(doctorData),
     }),
 
   getHospitalDirectory: () => request('/api/auth/directory'),
@@ -141,14 +175,15 @@ export const api = {
   },
 
   // ── Doctor Longitudinal & Verification ──
-  getPatientByAbha: (abhaId) =>
+  getPatientByAbha: (abhaId, _doctorId = null) =>
     request(`/api/doctor/patient/by-abha/${encodeURIComponent(abhaId)}`),
 
-  verifyEncounter: (encounterId, doctorId, notes = '') =>
-    request(`/api/doctor/encounter/${encounterId}/verify`, {
-      method: 'POST',
-      body: JSON.stringify({ doctor_id: doctorId, notes }),
-    }),
+  // Doctor identity comes from the server session; notes travel as a query param
+  verifyEncounter: (encounterId, notes = 'Clinical history verified.') =>
+    request(
+      `/api/doctor/encounter/${encodeURIComponent(encounterId)}/verify?notes=${encodeURIComponent(notes)}`,
+      { method: 'POST' }
+    ),
 
   // ── AYUSH Dashavidha Pariksha ──
   saveAyushAssessment: (encounterId, record) =>

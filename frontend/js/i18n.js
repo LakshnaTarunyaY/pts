@@ -108,7 +108,7 @@ export const DICTIONARY = {
     // Queue Token
     intake_completed: '✓ Intake Completed',
     case_ready: 'Your Case is Ready',
-    case_ready_sub: "Your clinical intake has been transmitted directly to Dr. S. Verma's workstation desk.",
+    case_ready_sub: "Your clinical intake has been transmitted directly to the consulting physician's workstation.",
     privacy_protection: '🔒 Patient Privacy Protection',
     privacy_wipe_desc: 'Screen will automatically wipe all records for the next patient.',
     your_token: 'YOUR QUEUE TOKEN',
@@ -118,7 +118,7 @@ export const DICTIONARY = {
     est_wait: 'Estimated Wait',
     print_ticket: '🖨 Print Paper Token Slip',
     wipe_exit_now: 'Wipe & Exit Now',
-    proceed_waiting: 'Please proceed to Waiting Area A outside Cabin 102.',
+    proceed_waiting: 'Please proceed to the waiting area outside the chamber room shown on your ticket.',
 
     // Triage Alert
     triage_red_badge: 'HIGH PRIORITY TRIAGE · RED FLAG DETECTED',

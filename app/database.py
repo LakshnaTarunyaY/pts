@@ -256,6 +256,62 @@ async def _run_migrations(db: aiosqlite.Connection):
         await db.execute("ALTER TABLE documents ADD COLUMN document_type TEXT DEFAULT 'prescription'")
     if "document_date" not in doc_cols:
         await db.execute("ALTER TABLE documents ADD COLUMN document_date TEXT")
+    if "abha_id" not in doc_cols:
+        await db.execute("ALTER TABLE documents ADD COLUMN abha_id TEXT")
+    if "original_filename" not in doc_cols:
+        await db.execute("ALTER TABLE documents ADD COLUMN original_filename TEXT")
+
+    # Migrations on users table — structured patient/doctor profile fields
+    cursor = await db.execute("PRAGMA table_info(users)")
+    user_cols = [row[1] for row in await cursor.fetchall()]
+    user_migrations = [
+        ("date_of_birth", "TEXT"),
+        ("age", "INTEGER"),
+        ("gender", "TEXT"),
+        ("city", "TEXT"),
+        ("emergency_contact", "TEXT"),
+        ("blood_group", "TEXT"),
+        ("allergy_food", "TEXT"),
+        ("allergy_drug", "TEXT"),
+        ("allergy_environmental", "TEXT"),
+        ("current_medications", "TEXT"),
+        ("pre_existing_conditions", "TEXT"),
+        ("chronic_diseases", "TEXT"),
+        ("surgical_history", "TEXT"),
+        ("medical_history", "TEXT"),
+        ("specialization", "TEXT"),
+        ("registration_number", "TEXT"),
+        ("verification_notes", "TEXT"),
+    ]
+    for col_name, col_type in user_migrations:
+        if col_name not in user_cols:
+            await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+
+    # Auth sessions (server-side)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token           TEXT PRIMARY KEY,
+            user_id         TEXT NOT NULL,
+            role            TEXT NOT NULL,
+            abha_id         TEXT,
+            created_at      TEXT DEFAULT (datetime('now')),
+            expires_at      TEXT NOT NULL
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON auth_sessions(user_id)")
+
+    # Doctor ↔ ABHA authorization grants (EMR access control)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS doctor_abha_access (
+            doctor_id       TEXT NOT NULL,
+            abha_id         TEXT NOT NULL,
+            reason          TEXT,
+            granted_by      TEXT,
+            created_at      TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (doctor_id, abha_id)
+        )
+    """)
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_doc_abha ON doctor_abha_access(abha_id)")
 
 
 async def _seed_default_users(db: aiosqlite.Connection):
@@ -272,8 +328,48 @@ async def _seed_default_users(db: aiosqlite.Connection):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, d)
 
-    # Seed sample patient Ramesh Kumar
+    # Seed sample patient Ramesh Kumar with structured profile fields
     await db.execute("""
-        INSERT OR IGNORE INTO users (id, role, full_name, email, mobile, abha_id, password_hash, department, room_number, qualification, hospital_name, hospital_phone)
-        VALUES ('pat-001', 'patient', 'Ramesh Kumar', 'ramesh@example.com', '9876543210', '91-4821-3910-4819', 'patient123', NULL, NULL, NULL, 'All India Institute of Ayurveda (AIIA), New Delhi', '+91-11-26950401')
+        INSERT OR IGNORE INTO users (
+            id, role, full_name, email, mobile, abha_id, password_hash,
+            date_of_birth, age, gender, city, emergency_contact, blood_group,
+            allergy_food, allergy_drug, allergy_environmental,
+            current_medications, pre_existing_conditions, chronic_diseases,
+            surgical_history, medical_history,
+            department, room_number, qualification, hospital_name, hospital_phone
+        ) VALUES (
+            'pat-001', 'patient', 'Ramesh Kumar', 'ramesh@example.com', '9876543210', '91-4821-3910-4819', '',
+            '1978-04-12', 46, 'Male', 'New Delhi', 'Sita Kumar · 9876500001', 'B+',
+            'Peanuts', 'Sulfa drugs', 'Dust',
+            'Metformin 500mg', 'Type 2 Diabetes', 'Hypertension',
+            'Appendectomy (2012)', 'Follow-up for glycemic control',
+            NULL, NULL, NULL, 'All India Institute of Ayurveda (AIIA), New Delhi', '+91-11-26950401'
+        )
+    """)
+
+    # Backfill demo patient medical fields if row already existed without them
+    await db.execute("""
+        UPDATE users SET
+            date_of_birth = COALESCE(date_of_birth, '1978-04-12'),
+            age = COALESCE(age, 46),
+            gender = COALESCE(gender, 'Male'),
+            city = COALESCE(city, 'New Delhi'),
+            emergency_contact = COALESCE(emergency_contact, 'Sita Kumar · 9876500001'),
+            blood_group = COALESCE(blood_group, 'B+'),
+            allergy_food = COALESCE(allergy_food, 'Peanuts'),
+            allergy_drug = COALESCE(allergy_drug, 'Sulfa drugs'),
+            current_medications = COALESCE(current_medications, 'Metformin 500mg'),
+            chronic_diseases = COALESCE(chronic_diseases, 'Hypertension'),
+            password_hash = COALESCE(NULLIF(password_hash, ''), '')
+        WHERE id = 'pat-001'
+    """)
+
+    # Demo care-team grant so seeded doctor can open demo patient longitudinal chart
+    await db.execute("""
+        INSERT OR IGNORE INTO doctor_abha_access (doctor_id, abha_id, reason, granted_by)
+        VALUES ('doc-verma', '91-4821-3910-4819', 'seed_demo_care_team', 'system')
+    """)
+    await db.execute("""
+        INSERT OR IGNORE INTO patients (id, name, age, gender, phone, abha_id)
+        VALUES ('pat-001', 'Ramesh Kumar', 46, 'Male', '9876543210', '91-4821-3910-4819')
     """)

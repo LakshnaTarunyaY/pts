@@ -89,16 +89,22 @@ function attachCockpitEvents(encounterId) {
   const signOffBtn = document.getElementById('btnDoctorSignOff');
   if (signOffBtn) {
     signOffBtn.addEventListener('click', async () => {
-      const notes = document.getElementById('doctorClinicalNotes')?.value || 'Clinical history verified.';
+      const notes = document.getElementById('doctorClinicalNotes')?.value.trim();
+      if (!notes) {
+        alert('Enter a clinical assessment before signing off.');
+        return;
+      }
+      const originalLabel = signOffBtn.textContent;
       try {
         signOffBtn.disabled = true;
         signOffBtn.textContent = 'Signing & Reconciling...';
-        await doctorApi.verifyEncounter(encounterId, 'doc-verma', notes);
-        alert('Encounter verified and signed successfully! Case record locked.');
+        const res = await doctorApi.verifyEncounter(encounterId, notes);
+        alert(`Encounter signed by ${res.verified_by || store.getState().doctor.profile?.full_name || 'you'}. Case record locked.`);
         window.location.hash = '#/doctor/queue';
       } catch (e) {
-        alert('Encounter verified (Local Signed Stamp). Returning to queue.');
-        window.location.hash = '#/doctor/queue';
+        alert(`Sign-off failed: ${e.message || 'Server unreachable'}. The case remains unsigned.`);
+        signOffBtn.disabled = false;
+        signOffBtn.textContent = originalLabel;
       }
     });
   }
@@ -106,11 +112,18 @@ function attachCockpitEvents(encounterId) {
   const callNextBtn = document.getElementById('btnTopCallNext');
   if (callNextBtn) {
     callNextBtn.addEventListener('click', async () => {
+      const originalLabel = callNextBtn.textContent;
       try {
-        await doctorApi.callNextPatient(encounterId);
-        alert(`Patient token called to Room 102!`);
+        callNextBtn.disabled = true;
+        callNextBtn.textContent = 'Calling…';
+        const res = await doctorApi.callNextPatient(encounterId);
+        const room = res.room_number || store.getState().doctor.profile?.room_number;
+        alert(`Token ${res.token_number || ''} called${room ? ` to ${room}` : ''}.`.replace(/\s+/g, ' '));
       } catch (e) {
-        alert(`Patient token called to Room 102!`);
+        alert(`Could not call the patient: ${e.message || 'Server unreachable'}`);
+      } finally {
+        callNextBtn.disabled = false;
+        callNextBtn.textContent = originalLabel;
       }
     });
   }

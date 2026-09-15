@@ -57,7 +57,7 @@ export function renderKioskWelcome() {
 
             <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--text-muted);">
               <span>Station ID: KIOSK-OPD-01</span>
-              <a href="#/doctor/login" style="color:var(--text-muted); text-decoration:none;">🔒 Doctor Login (1234)</a>
+              <a href="#/doctor/login" style="color:var(--text-muted); text-decoration:none;">🔒 Doctor Login</a>
             </div>
           </div>
         </div>
@@ -69,7 +69,25 @@ export function renderKioskWelcome() {
             <div id="kioskAvatarContainer" style="margin-bottom:var(--space-6);"></div>
 
             <h1 class="text-h1" style="margin-bottom:var(--space-3);">${welcomeHeading}</h1>
-            <p class="text-body-lg" style="max-width:600px; margin-bottom:var(--space-8);">${welcomeSub}</p>
+            <p class="text-body-lg" style="max-width:600px; margin-bottom:var(--space-4);">${welcomeSub}</p>
+
+            <div style="width:100%; max-width:440px; margin-bottom:var(--space-5); text-align:left;">
+              <label for="kioskReturningAbha" style="display:block; font-size:13px; font-weight:700; color:var(--text-secondary); margin-bottom:6px;">
+                Returning patient? Enter ABHA (optional)
+              </label>
+              <input
+                id="kioskReturningAbha"
+                class="form-input auth-input"
+                type="text"
+                inputmode="numeric"
+                placeholder="e.g. 91-4821-3910-4819"
+                value="${(store.getState().auth.user && store.getState().auth.user.role === 'patient' && store.getState().auth.user.abha_id) ? store.getState().auth.user.abha_id : ''}"
+              />
+              <div style="font-size:12px; color:var(--text-muted); margin-top:6px;">
+                Leave blank for a new walk-in visit. ABHA reuses your existing health record.
+              </div>
+              <div id="kioskAbhaError" class="auth-error" style="display:none; margin-top:8px;"></div>
+            </div>
 
             <button id="btnKioskStart" class="btn btn-primary btn-touch" style="width:100%; max-width:440px; justify-content:center;">
               ${startBtnText} →
@@ -111,26 +129,47 @@ export function initKioskWelcome() {
       // Stop speech when navigating
       tts.stop();
 
-      // Bootstrap encounter with backend
+      const abhaInput = document.getElementById('kioskReturningAbha');
+      const abhaError = document.getElementById('kioskAbhaError');
+      const abhaId = (abhaInput?.value || '').trim();
+      if (abhaError) abhaError.style.display = 'none';
+
+      // Bootstrap encounter with backend (optional ABHA for returning patients)
       try {
         startBtn.disabled = true;
-        startBtn.textContent = 'Initializing Encounter...';
+        startBtn.textContent = abhaId ? 'Linking ABHA & Starting…' : 'Initializing Encounter...';
         const res = await kioskApi.bootstrap({
           device_channel: 'kiosk',
-          language: store.getState().kiosk.language || 'hi'
+          language: store.getState().kiosk.language || 'hi',
+          abha_id: abhaId || null,
         });
         store.setKioskBootstrapData({
           encounterId: res.encounter_id,
           patientId: res.patient_id,
-          tokenNumber: res.token_number
+          tokenNumber: res.token_number,
         });
+        if (res.returning_patient) {
+          store.addToast(`Welcome back${res.patient_name ? `, ${res.patient_name}` : ''}`, 'success');
+        }
       } catch (e) {
-        console.warn('Backend bootstrap fallback to local session:', e);
-        store.setKioskBootstrapData({
-          encounterId: `enc-${Date.now().toString(36)}`,
-          patientId: `pat-${Date.now().toString(36)}`,
-          tokenNumber: 'A-261'
-        });
+        if (abhaId && e?.status === 404) {
+          if (abhaError) {
+            abhaError.textContent = 'ABHA Not Registered. Continue without ABHA or register first.';
+            abhaError.style.display = 'block';
+          }
+          startBtn.disabled = false;
+          startBtn.textContent = `${i18n.t('start_intake', store.getState().kiosk.language || 'hi')} →`;
+          return;
+        }
+        // Never fabricate a token: a local-only token would never reach the doctor queue
+        console.error('Kiosk bootstrap failed:', e);
+        if (abhaError) {
+          abhaError.textContent = `Could not start the intake: ${e.message || 'edge server unreachable'}. Please try again or ask reception for help.`;
+          abhaError.style.display = 'block';
+        }
+        startBtn.disabled = false;
+        startBtn.textContent = `${i18n.t('start_intake', store.getState().kiosk.language || 'hi')} →`;
+        return;
       }
       window.location.hash = '#/kiosk/language';
     });
